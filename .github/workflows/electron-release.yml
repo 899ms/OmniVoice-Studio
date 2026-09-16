@@ -32,7 +32,16 @@ jobs:
       - name: Require an exact version tag
         env:
           REF: ${{ github.ref }}
+          ALLOW_UNSIGNED: ${{ inputs.allow_unsigned }}
+          DISPATCH_ACTOR: ${{ github.actor }}
+          RERUN_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
         run: |
+          if [ "$ALLOW_UNSIGNED" = true ]; then
+            test "$DISPATCH_ACTOR" = "$OWNER" && test "$RERUN_ACTOR" = "$OWNER" || {
+              echo "Only the repository owner may accept unsigned installers"; exit 1;
+            }
+          fi
           VERSION=$(node -p "require('./frontend/package.json').version")
           test "$REF" = "refs/tags/v$VERSION" || { echo "Dispatch on the exact version tag"; exit 1; }
   package:
@@ -70,8 +79,6 @@ jobs:
       VOICESTUDIO_RUST_TARGET: ${{ matrix.target }}
       VOICESTUDIO_UPDATE_CHANNEL: electron-stable-${{ matrix.platform }}-${{ matrix.arch }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      CSC_LINK: ${{ secrets.ELECTRON_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.ELECTRON_CSC_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -80,7 +87,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -117,6 +124,9 @@ jobs:
       - name: Validate and build Electron
         run: bun run check:electron
       - name: Package without publishing
+        env:
+          CSC_LINK: ${{ secrets.ELECTRON_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.ELECTRON_CSC_KEY_PASSWORD }}
         working-directory: electron
         run: |
           bun x electron-builder --config electron-builder.config.mjs ${{ matrix.flags }} --publish never
@@ -204,5 +214,5 @@ jobs:
           gh release edit "$TAG" --notes-file release-assets/RELEASE_NOTES.md
           find release-assets -maxdepth 1 -type f ! -name RELEASE_NOTES.md -print0 | xargs -0 gh release upload "$TAG" --clobber
       - name: Publish only when explicitly requested
-        if: inputs.publish == true
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
         run: gh release edit "$TAG" --draft=false --latest
