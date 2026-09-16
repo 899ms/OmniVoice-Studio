@@ -10,6 +10,10 @@ on:
         description: "Publish the tagged Electron release after all platforms pass"
         type: boolean
         default: false
+      allow_unsigned:
+        description: "Explicitly accept unsigned/unnotarized Electron installers and documented updater limitations"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -118,6 +122,23 @@ jobs:
           bun x electron-builder --config electron-builder.config.mjs ${{ matrix.flags }} --publish never
           node tests/packaging-contract.mjs --artifact
           node tests/update-package-contract.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - name: Verify macOS signing and notarization before publication
+        if: inputs.publish == true && inputs.allow_unsigned != true && matrix.platform == 'darwin'
+        run: |
+          APP=$(find electron/release -maxdepth 2 -name VoiceStudio.app -type d -print -quit)
+          test -n "$APP"
+          codesign --verify --deep --strict "$APP"
+          spctl --assess --type execute --verbose=2 "$APP"
+      - name: Verify Windows installer signature before publication
+        if: inputs.publish == true && inputs.allow_unsigned != true && matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem electron/release/VoiceStudio-Electron-*.exe)
+          if ($installers.Count -eq 0) { throw "No installer to verify" }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature $installer.FullName
+            if ($signature.Status -ne 'Valid') { throw "Installer signature is not trusted: $($installer.Name)" }
+          }
       - name: Packaged startup smoke test
         working-directory: electron
         run: |
@@ -164,6 +185,16 @@ jobs:
           gh release download "$SUNSET_TAG" --pattern latest.json --dir release-assets
           gh release download "$SUNSET_TAG" --pattern latest-user.json --dir release-assets
           python3 scripts/prepare_electron_release.py --assets release-assets --tag "$TAG" --sunset-tag "$SUNSET_TAG"
+      - name: Disclose explicitly accepted unsigned artifacts
+        if: inputs.allow_unsigned == true
+        run: |
+          cat >> release-assets/RELEASE_NOTES.md <<'EOF'
+
+          ### Electron installer trust
+          These Electron installers are unsigned or ad-hoc signed and are not Apple-notarized.
+          Windows/macOS may show trust warnings. macOS automatic updates are unverified;
+          use manual installer updates. Tauri updater signatures remain independently verified.
+          EOF
       - name: Create or update draft
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
