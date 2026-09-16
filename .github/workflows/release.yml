@@ -982,7 +982,7 @@ jobs:
       # Writes SHA256SUMS-<label>.txt, attached to the release below. The
       # release-notes-checksums job puts every leg's file into the notes.
       - name: Compute SHA-256 checksums
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         id: checksums
         shell: bash
         run: |
@@ -1041,7 +1041,7 @@ jobs:
       # decision, so both belong to the single release-notes-checksums job
       # that runs after the whole matrix (see there for why).
       - name: Attach SHA256SUMS file
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1067,7 +1067,7 @@ jobs:
   # missing, so a failed platform leaves the release a draft.
   release-notes-checksums:
     needs: [build, repair-updater-manifest, uninstall-scripts]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -1076,6 +1076,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
+      KEEP_DRAFT: ${{ inputs.draft }}
     steps:
       - name: Write every platform's checksums into the notes, then publish
         shell: bash
@@ -1100,7 +1101,9 @@ jobs:
           done
           [ "$missing" = 0 ] || exit 1
           gh release edit "$TAG" --repo "$REPO" --notes-file "$WORK/notes.md"
-          if [[ "$TAG" == *-* ]]; then
+          if [[ "$KEEP_DRAFT" == "true" ]]; then
+            echo "Final Tauri draft verified; Electron publication owns the transition."
+          elif [[ "$TAG" == *-* ]]; then
             gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease
           else
             gh release edit "$TAG" --repo "$REPO" --draft=false --latest
@@ -1207,7 +1210,7 @@ jobs:
 
   uninstall-scripts:
     needs: [build]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     permissions:
       contents: write
