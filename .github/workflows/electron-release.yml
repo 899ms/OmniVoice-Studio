@@ -6,6 +6,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Existing version tag to package using this workflow from main (optional)"
+        type: string
+        default: ''
       publish:
         description: "Publish the tagged Electron release after all platforms pass"
         type: boolean
@@ -19,8 +23,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: electron-release-${{ github.ref }}
+  group: electron-release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  RELEASE_REF: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
 jobs:
   validate:
@@ -29,9 +36,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - name: Require an exact version tag
         env:
-          REF: ${{ github.ref }}
+          REF: ${{ env.RELEASE_REF }}
+          WORKFLOW_REF: ${{ github.ref }}
+          RELEASE_TAG_OVERRIDE: ${{ inputs.release_tag }}
           ALLOW_UNSIGNED: ${{ inputs.allow_unsigned }}
           DISPATCH_ACTOR: ${{ github.actor }}
           RERUN_ACTOR: ${{ github.triggering_actor }}
@@ -42,8 +53,12 @@ jobs:
               echo "Only the repository owner may accept unsigned installers"; exit 1;
             }
           fi
+          if [ -n "$RELEASE_TAG_OVERRIDE" ]; then
+            test "$WORKFLOW_REF" = refs/heads/main || { echo "Tag overrides require the workflow from main"; exit 1; }
+          fi
           VERSION=$(node -p "require('./frontend/package.json').version")
-          test "$REF" = "refs/tags/v$VERSION" || { echo "Dispatch on the exact version tag"; exit 1; }
+          test "$REF" = "refs/tags/v$VERSION" || { echo "Select the exact version tag"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$REF^{commit}")" || { echo "Checkout does not match the release tag"; exit 1; }
   package:
     needs: validate
     runs-on: ${{ matrix.runner }}
@@ -81,6 +96,8 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -129,6 +146,11 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.ELECTRON_CSC_KEY_PASSWORD }}
         working-directory: electron
         run: |
+          # An empty CSC_LINK is interpreted as the working directory by the
+          # signer. Omit absent credentials rather than passing empty strings.
+          if [ -z "${CSC_LINK:-}" ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD
+          fi
           bun x electron-builder --config electron-builder.config.mjs ${{ matrix.flags }} --publish never
           node tests/packaging-contract.mjs --artifact
           node tests/update-package-contract.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
@@ -174,11 +196,13 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ inputs.release_tag || github.ref_name }}
       SUNSET_TAG: ${{ vars.TAURI_SUNSET_TAG }}
       PUBLISH: ${{ inputs.publish }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: actions/download-artifact@v4
         with:
           pattern: electron-release-*
