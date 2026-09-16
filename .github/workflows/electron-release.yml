@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   validate:
+    # The transition tag is assembled after the manual Tauri draft succeeds.
+    if: github.event_name == 'workflow_dispatch' || github.ref_name != vars.TAURI_SUNSET_TAG
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
