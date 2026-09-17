@@ -27,26 +27,21 @@
 # each to surface PyInstaller/Tauri issues that never showed up locally on
 # macOS — iterate on CI.
 
-name: Desktop Release
+name: Tauri sunset (manual only)
 
+# Legacy workflow: run once on the final Tauri version tag.
+# Electron releases are owned by electron-release.yml.
 on:
-  push:
-    tags: ['v*']
-  schedule:
-    # 07:00 UTC daily — rolling `preview` prerelease from `main`. The
-    # preview-gate job no-ops the matrix when main hasn't moved in a day.
-    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
       draft:
-        description: "Create as draft release (tag push only)"
-        required: false
+        description: "Keep the final Tauri release draft until Electron artifacts are ready"
         default: "true"
       publish_preview:
-        description: "Publish a rolling 'preview' prerelease (updater Preview channel). Previews ALWAYS build from main — dispatching from any other branch fails the preview-gate."
-        required: false
+        description: "Legacy compatibility input; previews are retired"
         type: boolean
         default: false
+
 
 permissions:
   contents: write    # needed to attach artifacts + updater manifest to GH Release
@@ -76,6 +71,16 @@ jobs:
     name: Tests (backend + frontend)
     runs-on: ubuntu-22.04
     steps:
+      - name: Require the designated final Tauri tag
+        env:
+          SUNSET_TAG: ${{ vars.TAURI_SUNSET_TAG }}
+          REF: ${{ github.ref }}
+          PREVIEW: ${{ inputs.publish_preview }}
+        run: |
+          test -n "$SUNSET_TAG" || { echo "Set TAURI_SUNSET_TAG to the final v* tag first"; exit 1; }
+          test "$REF" = "refs/tags/$SUNSET_TAG"
+          test "$PREVIEW" != "true"
+
       - uses: actions/checkout@v4
 
       - name: Setup Python 3.11
@@ -476,6 +481,9 @@ jobs:
           fi
           {
             echo 'body<<RELEASE_BODY_EOF'
+            echo '## Final Tauri update'
+            echo 'VoiceStudio desktop is moving to Electron. This is the last Tauri release. Back up your data and install Electron separately: https://github.com/debpalash/VoiceStudio/blob/main/docs/electron-migration.md'
+            echo
             echo "$BODY"
             echo 'RELEASE_BODY_EOF'
           } >> "$GITHUB_OUTPUT"
@@ -667,6 +675,7 @@ jobs:
           includeUpdaterJson: true
 
       - name: Build + publish Electron desktop
+        if: false # Electron is released independently by electron-release.yml.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -973,7 +982,7 @@ jobs:
       # Writes SHA256SUMS-<label>.txt, attached to the release below. The
       # release-notes-checksums job puts every leg's file into the notes.
       - name: Compute SHA-256 checksums
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         id: checksums
         shell: bash
         run: |
@@ -1032,7 +1041,7 @@ jobs:
       # decision, so both belong to the single release-notes-checksums job
       # that runs after the whole matrix (see there for why).
       - name: Attach SHA256SUMS file
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1058,7 +1067,7 @@ jobs:
   # missing, so a failed platform leaves the release a draft.
   release-notes-checksums:
     needs: [build, repair-updater-manifest, uninstall-scripts]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -1067,6 +1076,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
+      KEEP_DRAFT: ${{ inputs.draft }}
     steps:
       - name: Write every platform's checksums into the notes, then publish
         shell: bash
@@ -1091,7 +1101,9 @@ jobs:
           done
           [ "$missing" = 0 ] || exit 1
           gh release edit "$TAG" --repo "$REPO" --notes-file "$WORK/notes.md"
-          if [[ "$TAG" == *-* ]]; then
+          if [[ "$KEEP_DRAFT" == "true" ]]; then
+            echo "Final Tauri draft verified; Electron publication owns the transition."
+          elif [[ "$TAG" == *-* ]]; then
             gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease
           else
             gh release edit "$TAG" --repo "$REPO" --draft=false --latest
@@ -1121,9 +1133,7 @@ jobs:
   # can leave the in-app updater with four 404 feeds.
   electron-publish-contract:
     needs: [build, preview-gate]
-    if: >-
-      needs.build.result == 'success' &&
-      (needs.preview-gate.outputs.is_preview == 'true' || startsWith(github.ref, 'refs/tags/v'))
+    if: false # Electron release workflow owns this contract.
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -1200,7 +1210,7 @@ jobs:
 
   uninstall-scripts:
     needs: [build]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     permissions:
       contents: write
