@@ -27,26 +27,21 @@
 # each to surface PyInstaller/Tauri issues that never showed up locally on
 # macOS — iterate on CI.
 
-name: Desktop Release
+name: Tauri sunset (manual only)
 
+# Legacy workflow: run once on the final Tauri version tag.
+# Electron releases are owned by electron-release.yml.
 on:
-  push:
-    tags: ['v*']
-  schedule:
-    # 07:00 UTC daily — rolling `preview` prerelease from `main`. The
-    # preview-gate job no-ops the matrix when main hasn't moved in a day.
-    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
       draft:
-        description: "Create as draft release (tag push only)"
-        required: false
+        description: "Keep the final Tauri release draft until Electron artifacts are ready"
         default: "true"
       publish_preview:
-        description: "Publish a rolling 'preview' prerelease (updater Preview channel). Previews ALWAYS build from main — dispatching from any other branch fails the preview-gate."
-        required: false
+        description: "Legacy compatibility input; previews are retired"
         type: boolean
         default: false
+
 
 permissions:
   contents: write    # needed to attach artifacts + updater manifest to GH Release
@@ -76,6 +71,16 @@ jobs:
     name: Tests (backend + frontend)
     runs-on: ubuntu-22.04
     steps:
+      - name: Require the designated final Tauri tag
+        env:
+          SUNSET_TAG: ${{ vars.TAURI_SUNSET_TAG }}
+          REF: ${{ github.ref }}
+          PREVIEW: ${{ inputs.publish_preview }}
+        run: |
+          test -n "$SUNSET_TAG" || { echo "Set TAURI_SUNSET_TAG to the final v* tag first"; exit 1; }
+          test "$REF" = "refs/tags/$SUNSET_TAG"
+          test "$PREVIEW" != "true"
+
       - uses: actions/checkout@v4
 
       - name: Setup Python 3.11
@@ -141,6 +146,9 @@ jobs:
       - name: Run frontend node:test
         working-directory: frontend
         run: node --experimental-strip-types --no-warnings --test ../tests/frontend/*.test.mjs
+
+      - name: Electron typecheck, tests and production contract
+        run: bun run check:electron
 
   # Decide preview-vs-stable, and for nightly runs whether `main` actually
   # moved in the last day. Outputs gate the expensive matrix (`build`) and the
@@ -311,7 +319,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             build-essential curl wget file libxdo-dev libssl-dev \
             libayatana-appindicator3-dev librsvg2-dev \
-            libasound2-dev ffmpeg
+            libasound2-dev ffmpeg xvfb
 
       # ── Frontend build ─────────────────────────────────────────────────
       - name: Cache bun deps
@@ -344,7 +352,7 @@ jobs:
       - name: Bundle uv (${{ matrix.rust_target }})
         shell: bash
         env:
-          UV_VERSION: "0.11.7"
+          UV_VERSION: "0.12.13"
           TRIPLE: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
@@ -473,6 +481,9 @@ jobs:
           fi
           {
             echo 'body<<RELEASE_BODY_EOF'
+            echo '## Final Tauri update'
+            echo 'VoiceStudio desktop is moving to Electron. This is the last Tauri release. Back up your data and install Electron separately: https://github.com/debpalash/VoiceStudio/blob/main/docs/electron-migration.md'
+            echo
             echo "$BODY"
             echo 'RELEASE_BODY_EOF'
           } >> "$GITHUB_OUTPUT"
@@ -662,6 +673,84 @@ jobs:
           prerelease: ${{ needs.preview-gate.outputs.is_preview == 'true' }}
           updaterJsonPreferNsis: false
           includeUpdaterJson: true
+
+      - name: Build + publish Electron desktop
+        if: false # Electron is released independently by electron-release.yml.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ (needs.preview-gate.outputs.is_preview == 'true') && 'preview' || github.ref_name }}
+          IS_PREVIEW: ${{ needs.preview-gate.outputs.is_preview }}
+          VOICESTUDIO_RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          case "${{ matrix.rust_target }}" in
+            aarch64-apple-darwin) ELECTRON_OS=darwin; ELECTRON_ARCH=arm64; FLAGS="--mac --arm64" ;;
+            x86_64-apple-darwin)  ELECTRON_OS=darwin; ELECTRON_ARCH=x64;   FLAGS="--mac --x64" ;;
+            x86_64-pc-windows-msvc) ELECTRON_OS=win32; ELECTRON_ARCH=x64; FLAGS="--win --x64" ;;
+            x86_64-unknown-linux-gnu) ELECTRON_OS=linux; ELECTRON_ARCH=x64; FLAGS="--linux --x64" ;;
+            *) echo "Unsupported Electron target: ${{ matrix.rust_target }}"; exit 1 ;;
+          esac
+          if [ "$IS_PREVIEW" = "true" ]; then
+            export VOICESTUDIO_UPDATE_CHANNEL="electron-preview-${ELECTRON_OS}-${ELECTRON_ARCH}"
+          else
+            export VOICESTUDIO_UPDATE_CHANNEL="electron-stable-${ELECTRON_OS}-${ELECTRON_ARCH}"
+          fi
+          if [ -n "${APPLE_CERTIFICATE:-}" ]; then
+            export CSC_LINK="$APPLE_CERTIFICATE"
+            export CSC_KEY_PASSWORD="${APPLE_CERTIFICATE_PASSWORD:-}"
+          fi
+
+          bun install --frozen-lockfile
+          (
+            cd electron
+            bun run build
+            node tests/packaging-contract.mjs
+            bun x electron-builder \
+              --config electron-builder.config.mjs $FLAGS --publish never
+            node tests/packaging-contract.mjs --artifact
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              xvfb-run -a node tests/packaged-smoke.mjs --setup
+            else
+              node tests/packaged-smoke.mjs --setup
+            fi
+            node tests/update-package-contract.mjs \
+              --channel "$VOICESTUDIO_UPDATE_CHANNEL" \
+              --platform "$ELECTRON_OS" \
+              --arch "$ELECTRON_ARCH"
+          )
+
+          # A rolling preview reuses one release. Remove only this platform /
+          # architecture's older Electron artifacts before publishing the new
+          # version; sibling matrix legs own different names and metadata.
+          if [ "$IS_PREVIEW" = "true" ]; then
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' > electron-assets.txt
+            case "${{ runner.os }}" in
+              Windows) OS_TOKEN=win ;;
+              macOS) OS_TOKEN=mac ;;
+              Linux) OS_TOKEN=linux ;;
+            esac
+            while IFS= read -r asset; do
+              case "$asset" in
+                VoiceStudio-Electron-*-${OS_TOKEN}-${ELECTRON_ARCH}.*|${VOICESTUDIO_UPDATE_CHANNEL}*.yml)
+                  gh release delete-asset "$RELEASE_TAG" "$asset" --yes --repo "$GITHUB_REPOSITORY"
+                  ;;
+              esac
+            done < electron-assets.txt
+          fi
+
+          electron_artifact_count=0
+          while IFS= read -r artifact; do
+            gh release upload "$RELEASE_TAG" "$artifact" --clobber --repo "$GITHUB_REPOSITORY"
+            electron_artifact_count=$((electron_artifact_count + 1))
+          done < <(find electron/release -maxdepth 1 -type f \
+            \( -name 'VoiceStudio-Electron-*' -o -name "${VOICESTUDIO_UPDATE_CHANNEL}*.yml" \) | sort)
+          if [ "$electron_artifact_count" -eq 0 ]; then
+            echo "FAIL — Electron build produced no publishable artifacts"
+            find electron/release -maxdepth 1 -type f -print || true
+            exit 1
+          fi
 
       - name: Build per-user Windows MSI
         if: runner.os == 'Windows'
@@ -893,7 +982,7 @@ jobs:
       # Writes SHA256SUMS-<label>.txt, attached to the release below. The
       # release-notes-checksums job puts every leg's file into the notes.
       - name: Compute SHA-256 checksums
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         id: checksums
         shell: bash
         run: |
@@ -914,6 +1003,10 @@ jobs:
                -o -name "*.msi" -o -name "*.msi.sig" \
                -o -name "*.AppImage" -o -name "*.AppImage.sig" \
                -o -name "*.deb" \) 2>/dev/null | sort)
+          while IFS= read -r artifact; do
+            ARTIFACTS+=("$artifact")
+          done < <(find electron/release -maxdepth 1 -type f \
+            \( -name 'VoiceStudio-Electron-*' -o -name 'electron-*.yml' \) 2>/dev/null | sort)
 
           if [ ${#ARTIFACTS[@]} -eq 0 ]; then
             echo "FAIL — no artifacts found under $BUNDLE_DIR"
@@ -948,7 +1041,7 @@ jobs:
       # decision, so both belong to the single release-notes-checksums job
       # that runs after the whole matrix (see there for why).
       - name: Attach SHA256SUMS file
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -974,7 +1067,7 @@ jobs:
   # missing, so a failed platform leaves the release a draft.
   release-notes-checksums:
     needs: [build, repair-updater-manifest, uninstall-scripts]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -983,6 +1076,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
+      KEEP_DRAFT: ${{ inputs.draft }}
     steps:
       - name: Write every platform's checksums into the notes, then publish
         shell: bash
@@ -1007,7 +1101,9 @@ jobs:
           done
           [ "$missing" = 0 ] || exit 1
           gh release edit "$TAG" --repo "$REPO" --notes-file "$WORK/notes.md"
-          if [[ "$TAG" == *-* ]]; then
+          if [[ "$KEEP_DRAFT" == "true" ]]; then
+            echo "Final Tauri draft verified; Electron publication owns the transition."
+          elif [[ "$TAG" == *-* ]]; then
             gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease
           else
             gh release edit "$TAG" --repo "$REPO" --draft=false --latest
@@ -1031,6 +1127,49 @@ jobs:
   # This job runs once after the whole matrix as the single final writer:
   # it makes the manifest's linux signature agree with the .sig asset that
   # actually shipped, and refuses to leave a mismatch behind.
+  # The matrix validates each Electron package before upload. This final read-only
+  # check validates the other half of the contract: GitHub must actually serve
+  # all four manifests and every payload they name. Without it a green release
+  # can leave the in-app updater with four 404 feeds.
+  electron-publish-contract:
+    needs: [build, preview-gate]
+    if: false # Electron release workflow owns this contract.
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ (needs.preview-gate.outputs.is_preview == 'true') && 'preview' || github.ref_name }}
+      CHANNEL: ${{ (needs.preview-gate.outputs.is_preview == 'true') && 'preview' || 'stable' }}
+      STABLE_TAG: ${{ needs.preview-gate.outputs.stable_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify published Electron updater assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          mkdir -p "$WORK/manifests"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isPrerelease,assets > "$WORK/release.json"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "electron-${CHANNEL}-*.yml" --dir "$WORK/manifests"
+          if [ "$CHANNEL" = "preview" ]; then
+            VERSION=$(python3 scripts/stamp-preview-version.py \
+              --package-json frontend/package.json \
+              --stable-tag "$STABLE_TAG" \
+              --run-number "${{ github.run_number }}")
+          else
+            VERSION=$(python3 -c 'import json; print(json.load(open("frontend/package.json"))["version"])')
+          fi
+          python3 scripts/check_electron_release_assets.py \
+            --release-json "$WORK/release.json" \
+            --manifest-dir "$WORK/manifests" \
+            --channel "$CHANNEL" \
+            --version "$VERSION"
+
   repair-updater-manifest:
     needs: [build, preview-gate]
     runs-on: ubuntu-latest
@@ -1071,7 +1210,7 @@ jobs:
 
   uninstall-scripts:
     needs: [build]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     permissions:
       contents: write
