@@ -331,6 +331,10 @@ jobs:
         working-directory: frontend/src-tauri
         run: cargo test --lib --target ${{ matrix.rust_target }} --message-format=short
 
+      - name: Keyboard thread dispatch regression
+        working-directory: frontend/src-tauri
+        run: cargo test --test keyboard_dispatch --target ${{ matrix.rust_target }} --message-format=short
+
       # Backend-lifecycle fault-injection harness: real child processes die
       # scripted deaths through the OMNIVOICE_BACKEND_CMD seam, and each
       # scenario asserts the user-visible diagnosis names the actual cause
