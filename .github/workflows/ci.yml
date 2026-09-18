@@ -215,6 +215,31 @@ jobs:
           node electron/tests/playback-smoke.mjs
           node electron/tests/dub-smoke.mjs
 
+  linux-native-package:
+    if: ${{ !inputs.windows_wix_diagnostic }}
+    name: Linux native package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/desktop-bridge -> target
+          key: linux-native-package
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxdo-dev libxtst-dev libx11-dev libxkbcommon-dev libwayland-dev libssl-dev pkg-config
+      - name: Verify relocation without build-time libraries
+        run: node --test electron/tests/native-linux-libraries.test.mjs
+      - name: Build and validate real Linux native package
+        run: |
+          cargo build --locked --release --manifest-path native/desktop-bridge/Cargo.toml
+          node electron/tests/native-linux-package.mjs
+
   # ── Cross-platform Tauri shell check ────────────────────────────────────
   # Catches platform-specific Rust regressions on PR (cfg(target_os=...)
   # gates, missing Windows/macOS deps, etc.) without spending the 15+ min
