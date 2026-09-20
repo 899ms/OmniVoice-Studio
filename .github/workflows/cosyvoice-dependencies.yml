@@ -1,0 +1,32 @@
+name: CosyVoice dependency smoke
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/services/sidecar_install.py'
+      - 'backend/engines/cosyvoice_subprocess/**'
+      - 'scripts/smoke-cosyvoice-dependencies.py'
+      - '.github/workflows/cosyvoice-dependencies.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-dependencies:
+    name: CosyVoice dependencies (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Build and import Python 3.10 dependencies
+        shell: bash
+        run: |
+          uv run --no-project --python 3.10 \
+            --with 'pyworld @ git+https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git@f31ad88d543fdaebbda2d0c9a5e4d4f991ae0b6c' \
+            --with numpy==1.26.4 --with setuptools==84.0.0 \
+            --with gdown==6.4.0 --with wget==3.2 --with pyarrow==25.0.1 \
+            python scripts/smoke-cosyvoice-dependencies.py
