@@ -25,8 +25,11 @@ jobs:
       - name: Build and import Python 3.10 dependencies
         shell: bash
         run: |
-          uv run --no-project --python 3.10 \
-            --with 'pyworld @ git+https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git@f31ad88d543fdaebbda2d0c9a5e4d4f991ae0b6c' \
-            --with numpy==1.26.4 --with setuptools==84.0.0 \
-            --with gdown==6.4.0 --with wget==3.2 --with pyarrow==25.0.1 \
-            python scripts/smoke-cosyvoice-dependencies.py
+          uv venv --python 3.10 .cosyvoice-probe
+          probe_python=.cosyvoice-probe/bin/python
+          if [[ "$RUNNER_OS" == Windows ]]; then probe_python=.cosyvoice-probe/Scripts/python.exe; fi
+          uv pip install --python "$probe_python" \
+            'pyworld @ git+https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder.git@f31ad88d543fdaebbda2d0c9a5e4d4f991ae0b6c' \
+            numpy==1.26.4 setuptools==84.0.0 \
+            gdown==6.4.0 wget==3.2 pyarrow==25.0.1
+          "$probe_python" scripts/smoke-cosyvoice-dependencies.py
