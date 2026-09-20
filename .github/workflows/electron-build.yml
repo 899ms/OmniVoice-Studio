@@ -104,6 +104,17 @@ jobs:
           else
             node tests/packaged-smoke.mjs --setup
           fi
+      - name: Install and start a fresh packaged runtime
+        working-directory: electron
+        timeout-minutes: 25
+        env:
+          VOICESTUDIO_RUNTIME_TIMEOUT_MS: '1200000'
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a node tests/packaged-smoke.mjs --install
+          else
+            node tests/packaged-smoke.mjs --install
+          fi
       - name: Save installers and updater metadata for review
         uses: actions/upload-artifact@v4
         with:
