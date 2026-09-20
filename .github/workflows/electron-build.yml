@@ -24,21 +24,26 @@ jobs:
             arch: x64
             target: x86_64-unknown-linux-gnu
             flags: --linux --x64
+            local_runtime: true
           - runner: windows-2022
             platform: win32
             arch: x64
             target: x86_64-pc-windows-msvc
             flags: --win --x64
+            local_runtime: true
           - runner: macos-15
             platform: darwin
             arch: arm64
             target: aarch64-apple-darwin
             flags: --mac --arm64
+            local_runtime: true
           - runner: macos-15-intel
             platform: darwin
             arch: x64
             target: x86_64-apple-darwin
             flags: --mac --x64
+            # PyTorch no longer ships the required macOS Intel wheels.
+            local_runtime: false
     defaults:
       run:
         shell: bash
@@ -103,6 +108,18 @@ jobs:
             xvfb-run -a node tests/packaged-smoke.mjs --setup
           else
             node tests/packaged-smoke.mjs --setup
+          fi
+      - name: Install and start a fresh packaged runtime
+        if: matrix.local_runtime
+        working-directory: electron
+        timeout-minutes: 25
+        env:
+          VOICESTUDIO_RUNTIME_TIMEOUT_MS: '1200000'
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a node tests/packaged-smoke.mjs --install
+          else
+            node tests/packaged-smoke.mjs --install
           fi
       - name: Save installers and updater metadata for review
         uses: actions/upload-artifact@v4
