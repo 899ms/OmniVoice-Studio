@@ -18,6 +18,23 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  installer:
+    name: Electron installer contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Shell installers and Worker routing
+        working-directory: electron
+        run: |
+          sh -n ../scripts/install.sh
+          node --test tests/shell-installer.test.mjs tests/installer-worker.test.mjs
+      - name: PowerShell installer flows
+        shell: pwsh
+        run: ./electron/tests/powershell-installer.ps1
+
   test:
     name: Tests (backend + frontend)
     runs-on: ubuntu-22.04
