@@ -64,6 +64,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/install.ps1 -Silent
+      - name: Verify and uninstall release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $keys = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+          $entry = Get-ItemProperty $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^VoiceStudio(?: \d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)?$' -and $_.UninstallString -match 'Uninstall VoiceStudio.exe' } | Select-Object -First 1
+          if (-not $entry) { throw 'Electron NSIS product not registered' }
+          & ./scripts/install.ps1 -Uninstall -Silent
+          if (Get-ItemProperty $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^VoiceStudio(?: \d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)?$' -and $_.UninstallString -match 'Uninstall VoiceStudio.exe' }) { throw 'Electron remains registered after uninstall' }
       - name: Build and install main (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
